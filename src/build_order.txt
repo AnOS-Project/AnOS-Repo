@@ -1,0 +1,11 @@
+# Standalone packages
+anos-welcome
+fcitx5-lotus-bin
+
+# Nvidia 390xx Series
+nvidia-390xx-utils
+lib32-nvidia-390xx-utils
+
+# Nvidia 470xx Series
+nvidia-470xx-utils
+lib32-nvidia-470xx-utils
