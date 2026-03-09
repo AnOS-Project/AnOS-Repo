@@ -15,8 +15,15 @@ jobs:
       image: archlinux:latest
 
     steps:
+      - name: Pre-install Git for Checkout
+        # actions/checkout requires git to be installed to clone submodules properly inside minimal containers
+        run: pacman -Sy --noconfirm git
+
       - name: Checkout Source Code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive # Fetches and initializes submodules
+          fetch-depth: 0        # Fetches full history, ensuring smooth remote updates
 
       - name: Setup Arch Linux Environment & Install Flutter
         run: |
@@ -40,6 +47,9 @@ jobs:
           git config --global --add safe.directory '*'
           su - builder -c "git config --global --add safe.directory '*'"
           
+          # 5.1. Update submodules to their latest remote commits
+          su - builder -c "cd $GITHUB_WORKSPACE && git submodule update --remote --recursive"
+          
           # 6. Install yay (AUR Helper) - RUN AS BUILDER
           su - builder -c "git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin && cd /tmp/yay-bin && makepkg -si --noconfirm"
           
@@ -59,7 +69,7 @@ jobs:
           START_TIME=$(date +%s)
           
           # Check Trigger Type (space added after 'if')
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if[ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TRIGGER="Manual"
           else
             TRIGGER="Auto"
@@ -79,7 +89,7 @@ jobs:
             # Return to the base src/ directory at the start of every loop
             cd "$GITHUB_WORKSPACE/src/"
             
-            if [ ! -d "$d" ]; then
+            if[ ! -d "$d" ]; then
               continue
             fi
             
@@ -90,7 +100,7 @@ jobs:
             
             cd "$GITHUB_WORKSPACE/src/$dir_name"
             
-            if [ -f "PKGBUILD" ]; then
+            if[ -f "PKGBUILD" ]; then
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
               # RUN AS BUILDER: makepkg securely
@@ -99,7 +109,7 @@ jobs:
               BUILD_STATUS=$?
               set -e
               
-              if [ $BUILD_STATUS -ne 0 ]; then
+              if[ $BUILD_STATUS -ne 0 ]; then
                 echo "::error::Failed to build $dir_name. Skipping to next package..."
                 continue
               fi
@@ -115,7 +125,7 @@ jobs:
                 PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
               done
               
-            elif [ -f "dist/build.sh" ]; then
+            elif[ -f "dist/build.sh" ]; then
               echo "Found dist/build.sh. Running custom build script..."
               chmod +x dist/build.sh
               
@@ -125,7 +135,7 @@ jobs:
               BUILD_STATUS=$?
               set -e
               
-              if [ $BUILD_STATUS -ne 0 ]; then
+              if[ $BUILD_STATUS -ne 0 ]; then
                 echo "::error::Custom build.sh failed for $dir_name. Skipping to next package..."
                 continue
               fi
@@ -173,7 +183,7 @@ jobs:
           PREV_TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name || echo "none")
           while true; do
             NEW_TAG="$RANDOM$RANDOM"
-            if [ "$NEW_TAG" != "$PREV_TAG" ]; then
+            if[ "$NEW_TAG" != "$PREV_TAG" ]; then
               break
             fi
           done
@@ -191,7 +201,7 @@ jobs:
             if [ -z "$PACKAGE_NAMES" ]; then echo "- No packages built"; else echo -e "$PACKAGE_NAMES"; fi
             echo ""
             echo "### Package Sizes"
-            if [ -z "$PACKAGE_SIZES" ]; then echo "- N/A"; else echo -e "$PACKAGE_SIZES"; fi
+            if[ -z "$PACKAGE_SIZES" ]; then echo "- N/A"; else echo -e "$PACKAGE_SIZES"; fi
           } > $GITHUB_WORKSPACE/release_notes.md
 
       - name: Publish GitHub Release
