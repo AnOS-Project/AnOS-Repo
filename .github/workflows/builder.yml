@@ -31,6 +31,9 @@ jobs:
           pacman-key --init
           pacman-key --populate
           
+          # 1.5 Enable Multilib repository (Required for lib32-* packages)
+          echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+          
           # 2. Install base dependencies PLUS Flutter Linux build requirements
           pacman -Syu --noconfirm base-devel git sudo jq curl clang cmake ninja pkgconf gtk3
           
@@ -82,18 +85,31 @@ jobs:
           PACKAGE_NAMES=""
           PACKAGE_SIZES=""
           
-          # Iterate through src/ folder dynamically
           cd "$GITHUB_WORKSPACE/src/" || exit 0
           
-          for d in */; do
+          # SMART BUILD ORDER: Check if a build_order.txt exists to resolve inter-dependencies properly
+          if [ -f "build_order.txt" ]; then
+            echo "Found build_order.txt! Using specified build order..."
+            # Read non-empty, non-comment lines into array
+            mapfile -t DIRS < <(grep -v '^#' build_order.txt | grep -v '^\s*$')
+          else
+            echo "No build_order.txt found. Falling back to alphabetical order..."
+            DIRS=(*/)
+          fi
+          
+          # Iterate through determined directories
+          for d in "${DIRS[@]}"; do
             # Return to the base src/ directory at the start of every loop
             cd "$GITHUB_WORKSPACE/src/"
             
-            if [ ! -d "$d" ]; then
+            # Remove trailing slash if present
+            dir_name=${d%/}
+            
+            if [ ! -d "$dir_name" ]; then
+              echo "::warning::Directory $dir_name listed but not found. Skipping..."
               continue
             fi
             
-            dir_name=${d%/}
             echo "================================================="
             echo "Processing project: $dir_name"
             echo "================================================="
@@ -104,6 +120,237 @@ jobs:
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
               # RUN AS BUILDER: makepkg securely
+              # We KEEP the -i flag so that dependencies built earlier are available to packages built later
+              set +e
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -si --noconfirm"
+              BUILD_STATUS=$?
+              set -e
+              
+              if [ $BUILD_STATUS -ne 0 ]; then
+                echo "::error::Failed to build $dir_name. Skipping to next package..."
+                continue
+              fi
+              
+              # Copy outputs to our temp repo directory
+              cp *.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
+              
+              for pkg in *.pkg.tar.*; do
+                if [ ! -e "$pkg" ]; then continue; fi
+                filename=$(basename "$pkg")
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                SIZE=$(du -h "$pkg" | cut -f1)
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+              done
+              
+            elif [ -f "dist/build.sh" ]; then
+              echo "Found dist/build.sh. Running custom build script..."
+              chmod +x dist/build.sh
+              
+              # RUN AS BUILDER: Execute your custom flutter script securely
+              set +e
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && ./dist/build.sh"
+              BUILD_STATUS=$?
+              set -e
+              
+              if [ $BUILD_STATUS -ne 0 ]; then
+                echo "::error::Custom build.sh failed for $dir_name. Skipping to next package..."
+                continue
+              fi
+              
+              # Install it via pacman just in case a subsequent package depends on it
+              su - builder -c "sudo pacman -U --noconfirm dist/pkg/*.pkg.tar.* 2>/dev/null || true"
+              
+              # Copy from your script's dist/pkg folder directly
+              cp dist/pkg/*.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
+              
+              for pkg in dist/pkg/*.pkg.tar.*; do
+                if [ ! -e "$pkg" ]; then continue; fi
+                filename=$(basename "$pkg")
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                SIZE=$(du -h "$pkg" | cut -f1)
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+              done
+            else
+              echo "::warning::Skipping $dir_name: Neither PKGBUILD nor dist/build.sh found."
+            fi
+          done
+          
+          # Generate the 'anos' Pacman Repository
+          echo "Generating anos pacman repo..."
+          cd "$TMP_DIR"
+          
+          # Hand ownership of the copied packages back to builder before running repo-add
+          chown -R builder:builder "$TMP_DIR"
+          
+          # RUN AS BUILDER: Generate the DB
+          if ls *.pkg.tar.* >/dev/null 2>&1; then
+            su - builder -c "cd $TMP_DIR && repo-add anos.db.tar.gz *.pkg.tar.*"
+          else
+            echo "::warning::No packages were built!"
+          fi
+          
+          # Calculate Metrics
+          END_TIME=$(date +%s)
+          TOTAL_TIME=$((END_TIME - START_TIME))
+          TOTAL_MIN=$((TOTAL_TIME / 60))
+          TOTAL_SEC=$((TOTAL_TIME % 60))
+          CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S UTC")
+          
+          # Generate Unique Random Release Tag
+          PREV_TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name || echo "none")
+          while true; do
+            NEW_TAG="$RANDOM$RANDOM"
+            if [ "$NEW_TAG" != "$PREV_TAG" ]; then
+              break
+            fi
+          done
+          
+          echo "RELEASE_TAG=$NEW_TAG" >> $GITHUB_ENV
+          
+          # Format Release Markdown Message
+          {
+            echo "## Anos Repository Build"
+            echo "**Trigger:** $TRIGGER"
+            echo "**Date/Time:** $CURRENT_DATE"
+            echo "**Total Time Taken:** ${TOTAL_MIN}m ${TOTAL_SEC}s"
+            echo ""
+            echo "### Built Packages"
+            if [ -z "$PACKAGE_NAMES" ]; then echo "- No packages built"; else echo -e "$PACKAGE_NAMES"; fi
+            echo ""
+            echo "### Package Sizes"
+            if [ -z "$PACKAGE_SIZES" ]; then echo "- N/A"; else echo -e "$PACKAGE_SIZES"; fi
+          } > $GITHUB_WORKSPACE/release_notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release_notes.md
+          files: tmp_repo/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}name: Build Anos Packages
+
+on:
+  workflow_dispatch: # Allows manual trigger via GitHub UI
+  schedule:
+    - cron: '0 0 * * *' # Auto trigger once a day at midnight UTC
+
+permissions:
+  contents: write # Required for the action to create a GitHub Release
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Pre-install Git for Checkout
+        # actions/checkout requires git to be installed to clone submodules properly inside minimal containers
+        run: pacman -Sy --noconfirm git
+
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # Fetches and initializes submodules
+          fetch-depth: 0        # Fetches full history, ensuring smooth remote updates
+
+      - name: Setup Arch Linux Environment & Install Flutter
+        run: |
+          # 1. Initialize pacman keyring
+          pacman-key --init
+          pacman-key --populate
+          
+          # 1.5 Enable Multilib repository (Required for lib32-* packages)
+          echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+          
+          # 2. Install base dependencies PLUS Flutter Linux build requirements
+          pacman -Syu --noconfirm base-devel git sudo jq curl clang cmake ninja pkgconf gtk3
+          
+          # 3. Disable debug package generation globally (prevents unwanted -debug packages)
+          sed -i 's/\bdebug\b/!debug/g' /etc/makepkg.conf
+          sed -i 's/!!debug/!debug/g' /etc/makepkg.conf
+          
+          # 4. Create a non-root user for makepkg and yay
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          
+          # 5. Fix workspace ownership so the builder user can read/write to the checked-out code
+          chown -R builder:builder $GITHUB_WORKSPACE
+          git config --global --add safe.directory '*'
+          su - builder -c "git config --global --add safe.directory '*'"
+          
+          # 5.1. Update submodules to their latest remote commits
+          su - builder -c "cd $GITHUB_WORKSPACE && git submodule update --remote --recursive"
+          
+          # 6. Install yay (AUR Helper) - RUN AS BUILDER
+          su - builder -c "git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin && cd /tmp/yay-bin && makepkg -si --noconfirm"
+          
+          # 7. Install flutter-bin via yay - RUN AS BUILDER
+          su - builder -c "yay -S --noconfirm flutter-bin"
+          
+          # 8. Grant the builder user permissions to run Flutter build commands
+          usermod -aG flutter builder
+          chown -R root:flutter /opt/flutter || true
+          chmod -R g+w /opt/flutter || true
+
+      - name: Build Packages and Generate Repo
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          START_TIME=$(date +%s)
+          
+          # Check Trigger Type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TRIGGER="Manual"
+          else
+            TRIGGER="Auto"
+          fi
+          
+          # Setup tmp folder for final packages
+          TMP_DIR="$GITHUB_WORKSPACE/tmp_repo"
+          mkdir -p "$TMP_DIR"
+          
+          PACKAGE_NAMES=""
+          PACKAGE_SIZES=""
+          
+          cd "$GITHUB_WORKSPACE/src/" || exit 0
+          
+          # SMART BUILD ORDER: Check if a build_order.txt exists to resolve inter-dependencies properly
+          if [ -f "build_order.txt" ]; then
+            echo "Found build_order.txt! Using specified build order..."
+            # Read non-empty, non-comment lines into array
+            mapfile -t DIRS < <(grep -v '^#' build_order.txt | grep -v '^\s*$')
+          else
+            echo "No build_order.txt found. Falling back to alphabetical order..."
+            DIRS=(*/)
+          fi
+          
+          # Iterate through determined directories
+          for d in "${DIRS[@]}"; do
+            # Return to the base src/ directory at the start of every loop
+            cd "$GITHUB_WORKSPACE/src/"
+            
+            # Remove trailing slash if present
+            dir_name=${d%/}
+            
+            if [ ! -d "$dir_name" ]; then
+              echo "::warning::Directory $dir_name listed but not found. Skipping..."
+              continue
+            fi
+            
+            echo "================================================="
+            echo "Processing project: $dir_name"
+            echo "================================================="
+            
+            cd "$GITHUB_WORKSPACE/src/$dir_name"
+            
+            if [ -f "PKGBUILD" ]; then
+              echo "Found PKGBUILD. Compiling directly via makepkg..."
+              
+              # RUN AS BUILDER: makepkg securely
+              # We KEEP the -i flag so that dependencies built earlier are available to packages built later
               set +e
               su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -si --noconfirm"
               BUILD_STATUS=$?
