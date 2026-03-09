@@ -1,0 +1,165 @@
+name: Build Anos Packages
+
+on:
+  workflow_dispatch: # Allows manual trigger via GitHub UI
+  schedule:
+    - cron: '0 0 * * *' # Auto trigger once a day at midnight UTC
+
+permissions:
+  contents: write # Required for the action to create a GitHub Release
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Arch Linux Environment & Install Flutter
+        run: |
+          # Initialize pacman keyring
+          pacman-key --init
+          pacman-key --populate
+          
+          # Install base dependencies PLUS Flutter Linux build requirements
+          pacman -Syu --noconfirm base-devel git sudo jq curl clang cmake ninja pkgconf gtk3
+          
+          # Create a non-root user for makepkg and yay
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          
+          # Fix workspace ownership so the builder user can read/write to the checked-out code
+          chown -R builder:builder $GITHUB_WORKSPACE
+          
+          # Install yay (AUR Helper)
+          su - builder -c "git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin && cd /tmp/yay-bin && makepkg -si --noconfirm"
+          
+          # Install flutter-bin via yay
+          su - builder -c "yay -S --noconfirm flutter-bin"
+          
+          # Workaround for Git security restrictions in Actions
+          su - builder -c "git config --global --add safe.directory $GITHUB_WORKSPACE"
+
+      - name: Build Packages and Generate Repo
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          START_TIME=$(date +%s)
+          
+          # 1. Determine Trigger Type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TRIGGER="Manual"
+          else
+            TRIGGER="Auto"
+          fi
+          
+          # 2. Setup tmp folder for final packages
+          TMP_DIR="$GITHUB_WORKSPACE/tmp_repo"
+          mkdir -p "$TMP_DIR"
+          chown -R builder:builder "$TMP_DIR"
+          
+          PACKAGE_NAMES=""
+          PACKAGE_SIZES=""
+          
+          # 3. Iterate through src/ folder
+          cd $GITHUB_WORKSPACE/src/ || exit 0
+          
+          for d in */; do
+            [ -d "$d" ] || continue
+            dir_name=${d%/}
+            echo "Processing project: $dir_name"
+            
+            cd "$GITHUB_WORKSPACE/src/$dir_name"
+            
+            if [ -f "PKGBUILD" ]; then
+              echo "Found PKGBUILD. Compiling directly via makepkg..."
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -s --noconfirm"
+              
+              # Copy outputs to our temp repo directory
+              cp *.pkg.tar.zst "$TMP_DIR/" 2>/dev/null || true
+              
+              for pkg in *.pkg.tar.zst; do
+                [ -e "$pkg" ] || continue
+                filename=$(basename "$pkg")
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                SIZE=$(du -h "$pkg" | cut -f1)
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+              done
+              
+            elif [ -f "dist/build.sh" ]; then
+              echo "Found dist/build.sh. Running custom build script..."
+              chmod +x dist/build.sh
+              
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && ./dist/build.sh"
+              
+              # Copy from dist/pkg as requested
+              cp dist/pkg/*.pkg.tar.zst "$TMP_DIR/" 2>/dev/null || true
+              
+              for pkg in dist/pkg/*.pkg.tar.zst; do
+                [ -e "$pkg" ] || continue
+                filename=$(basename "$pkg")
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                SIZE=$(du -h "$pkg" | cut -f1)
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+              done
+            else
+              echo "Skipping $dir_name: Neither PKGBUILD nor dist/build.sh found."
+            fi
+          done
+          
+          # 4. Generate the 'anos' Pacman Repository (No PGP)
+          echo "Generating anos pacman repo..."
+          cd "$TMP_DIR"
+          # Ensure builder user owns the newly copied packages before running repo-add
+          chown -R builder:builder "$TMP_DIR"
+          
+          if ls *.pkg.tar.zst >/dev/null 2>&1; then
+            su - builder -c "cd $TMP_DIR && repo-add anos.db.tar.gz *.pkg.tar.zst"
+          else
+            echo "WARNING: No packages were built!"
+          fi
+          
+          # 5. Calculate Metrics
+          END_TIME=$(date +%s)
+          TOTAL_TIME=$((END_TIME - START_TIME))
+          TOTAL_MIN=$((TOTAL_TIME / 60))
+          TOTAL_SEC=$((TOTAL_TIME % 60))
+          CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S UTC")
+          
+          # 6. Generate Unique Random Release Tag (Preventing Match with Previous)
+          PREV_TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
+          while true; do
+            NEW_TAG="$RANDOM$RANDOM"
+            if [ "$NEW_TAG" != "$PREV_TAG" ]; then
+              break
+            fi
+          done
+          
+          echo "RELEASE_TAG=$NEW_TAG" >> $GITHUB_ENV
+          
+          # 7. Format Release Markdown Message
+          {
+            echo "## Anos Repository Build"
+            echo "**Trigger:** $TRIGGER"
+            echo "**Date/Time:** $CURRENT_DATE"
+            echo "**Total Time Taken:** ${TOTAL_MIN}m ${TOTAL_SEC}s"
+            echo ""
+            echo "### Built Packages"
+            if [ -z "$PACKAGE_NAMES" ]; then echo "- No packages built"; else echo -e "$PACKAGE_NAMES"; fi
+            echo ""
+            echo "### Package Sizes"
+            if [ -z "$PACKAGE_SIZES" ]; then echo "- N/A"; else echo -e "$PACKAGE_SIZES"; fi
+          } > $GITHUB_WORKSPACE/release_notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release_notes.md
+          files: tmp_repo/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
