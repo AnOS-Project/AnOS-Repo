@@ -1,3 +1,20 @@
 [submodule "src/fcitx5-lotus-bin"]
 	path = src/fcitx5-lotus-bin
 	url = https://aur.archlinux.org/fcitx5-lotus-bin.git
+	branch = master
+[submodule "src/nvidia-470xx-utils"]
+	path = src/nvidia-470xx-utils
+	url = https://aur.archlinux.org/nvidia-470xx-utils.git
+	branch = master
+[submodule "src/lib32-nvidia-470xx-utils"]
+	path = src/lib32-nvidia-470xx-utils
+	url = https://aur.archlinux.org/lib32-nvidia-470xx-utils.git
+	branch = master
+[submodule "src/nvidia-390xx-utils"]
+	path = src/nvidia-390xx-utils
+	url = https://aur.archlinux.org/nvidia-390xx-utils.git
+	branch = master
+[submodule "src/lib32-nvidia-390xx-utils"]
+	path = src/lib32-nvidia-390xx-utils
+	url = https://aur.archlinux.org/lib32-nvidia-390xx-utils.git
+	branch = master
