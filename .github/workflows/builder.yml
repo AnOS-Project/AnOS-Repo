@@ -23,7 +23,9 @@ jobs:
           # Initialize pacman keyring
           pacman-key --init
           pacman-key --populate
-          pacman -Syu --noconfirm base-devel git sudo jq curl
+          
+          # Install base dependencies PLUS Flutter Linux build requirements
+          pacman -Syu --noconfirm base-devel git sudo jq curl clang cmake ninja pkgconf gtk3
           
           # Create a non-root user for makepkg and yay
           useradd -m builder
@@ -83,9 +85,9 @@ jobs:
               for pkg in *.pkg.tar.zst; do
                 [ -e "$pkg" ] || continue
                 filename=$(basename "$pkg")
-                PACKAGE_NAMES="$PACKAGE_NAMES\n- $filename"
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
                 SIZE=$(du -h "$pkg" | cut -f1)
-                PACKAGE_SIZES="$PACKAGE_SIZES\n- $filename: $SIZE"
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
               done
               
             elif [ -f "dist/build.sh" ]; then
@@ -100,9 +102,9 @@ jobs:
               for pkg in dist/pkg/*.pkg.tar.zst; do
                 [ -e "$pkg" ] || continue
                 filename=$(basename "$pkg")
-                PACKAGE_NAMES="$PACKAGE_NAMES\n- $filename"
+                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
                 SIZE=$(du -h "$pkg" | cut -f1)
-                PACKAGE_SIZES="$PACKAGE_SIZES\n- $filename: $SIZE"
+                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
               done
             else
               echo "Skipping $dir_name: Neither PKGBUILD nor dist/build.sh found."
@@ -112,6 +114,9 @@ jobs:
           # 4. Generate the 'anos' Pacman Repository (No PGP)
           echo "Generating anos pacman repo..."
           cd "$TMP_DIR"
+          # Ensure builder user owns the newly copied packages before running repo-add
+          chown -R builder:builder "$TMP_DIR"
+          
           if ls *.pkg.tar.zst >/dev/null 2>&1; then
             su - builder -c "cd $TMP_DIR && repo-add anos.db.tar.gz *.pkg.tar.zst"
           else
@@ -128,7 +133,6 @@ jobs:
           # 6. Generate Unique Random Release Tag (Preventing Match with Previous)
           PREV_TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
           while true; do
-            # Appending two random values to guarantee a larger pool
             NEW_TAG="$RANDOM$RANDOM"
             if [ "$NEW_TAG" != "$PREV_TAG" ]; then
               break
