@@ -1,6 +1,14 @@
 # Standalone packages
 anos-welcome
 fcitx5-lotus-bin
+flutter-bin
+android-studio
+sudo-gui
+visual-studio-code-bin
+google-chrome
+
+
+
 
 # Nvidia 390xx Series
 nvidia-390xx-utils
