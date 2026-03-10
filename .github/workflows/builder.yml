@@ -15,14 +15,24 @@ jobs:
       image: archlinux:latest
 
     steps:
+      - name: Pre-install Git for Checkout
+        # actions/checkout requires git to be installed to clone submodules properly inside minimal containers
+        run: pacman -Sy --noconfirm git
+
       - name: Checkout Source Code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive # Fetches and initializes submodules
+          fetch-depth: 0        # Fetches full history, ensuring smooth remote updates
 
       - name: Setup Arch Linux Environment & Install Flutter
         run: |
           # 1. Initialize pacman keyring
           pacman-key --init
           pacman-key --populate
+          
+          # 1.5 Enable Multilib repository (Required for lib32-* packages)
+          echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
           
           # 2. Install base dependencies PLUS Flutter Linux build requirements
           pacman -Syu --noconfirm base-devel git sudo jq curl clang cmake ninja pkgconf gtk3
@@ -40,6 +50,9 @@ jobs:
           git config --global --add safe.directory '*'
           su - builder -c "git config --global --add safe.directory '*'"
           
+          # 5.1. Update submodules to their latest remote commits
+          su - builder -c "cd $GITHUB_WORKSPACE && git submodule update --remote --recursive"
+          
           # 6. Install yay (AUR Helper) - RUN AS BUILDER
           su - builder -c "git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin && cd /tmp/yay-bin && makepkg -si --noconfirm"
           
@@ -53,12 +66,13 @@ jobs:
 
       - name: Build Packages and Generate Repo
         id: build
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           START_TIME=$(date +%s)
           
-          # Check Trigger Type (space added after 'if')
+          # Check Trigger Type
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TRIGGER="Manual"
           else
@@ -71,19 +85,33 @@ jobs:
           
           PACKAGE_NAMES=""
           PACKAGE_SIZES=""
+          SKIPPED_PACKAGES=""
           
-          # Iterate through src/ folder dynamically
           cd "$GITHUB_WORKSPACE/src/" || exit 0
           
-          for d in */; do
+          # SMART BUILD ORDER: Check if a build_order.txt exists to resolve inter-dependencies properly
+          if [ -f "build_order.txt" ]; then
+            echo "Found build_order.txt! Using specified build order..."
+            mapfile -t DIRS < <(grep -v '^#' build_order.txt | grep -v '^\s*$')
+          else
+            echo "No build_order.txt found. Falling back to alphabetical order..."
+            DIRS=(*/)
+          fi
+          
+          # Iterate through determined directories
+          for d in "${DIRS[@]}"; do
             # Return to the base src/ directory at the start of every loop
             cd "$GITHUB_WORKSPACE/src/"
             
-            if [ ! -d "$d" ]; then
+            # Remove trailing slash if present
+            dir_name=${d%/}
+            
+            if [ ! -d "$dir_name" ]; then
+              echo "::warning::Directory $dir_name listed but not found. Skipping..."
+              SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (directory not found)"
               continue
             fi
             
-            dir_name=${d%/}
             echo "================================================="
             echo "Processing project: $dir_name"
             echo "================================================="
@@ -93,15 +121,27 @@ jobs:
             if [ -f "PKGBUILD" ]; then
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
-              # RUN AS BUILDER: makepkg securely
+              # -s = sync deps only, NO -i flag so makepkg does NOT auto-install
               set +e
-              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -si --noconfirm"
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -s --noconfirm --noprogressbar"
               BUILD_STATUS=$?
               set -e
               
               if [ $BUILD_STATUS -ne 0 ]; then
                 echo "::error::Failed to build $dir_name. Skipping to next package..."
+                SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (build failed)"
                 continue
+              fi
+              
+              # Install separately — pipe 'yes' to auto-answer conflict removal prompts
+              # (--noconfirm alone defaults to N for "Remove conflicting package? [y/N]")
+              set +e
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && yes | sudo pacman -U *.pkg.tar.*"
+              INSTALL_STATUS=$?
+              set -e
+              
+              if [ $INSTALL_STATUS -ne 0 ]; then
+                echo "::warning::Built but failed to install $dir_name (may affect dependent packages)."
               fi
               
               # Copy outputs to our temp repo directory
@@ -110,9 +150,9 @@ jobs:
               for pkg in *.pkg.tar.*; do
                 if [ ! -e "$pkg" ]; then continue; fi
                 filename=$(basename "$pkg")
-                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
-                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+                PACKAGE_SIZES="$PACKAGE_SIZES"$'\n'"- $filename: $SIZE"
               done
               
             elif [ -f "dist/build.sh" ]; then
@@ -127,11 +167,14 @@ jobs:
               
               if [ $BUILD_STATUS -ne 0 ]; then
                 echo "::error::Custom build.sh failed for $dir_name. Skipping to next package..."
+                SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (dist/build.sh failed)"
                 continue
               fi
               
-              # Install it via pacman just in case a subsequent package depends on it
-              su - builder -c "sudo pacman -U --noconfirm dist/pkg/*.pkg.tar.* 2>/dev/null || true"
+              # Install with 'yes' to auto-answer conflict removal prompts
+              set +e
+              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && yes | sudo pacman -U dist/pkg/*.pkg.tar.*"
+              set -e
               
               # Copy from your script's dist/pkg folder directly
               cp dist/pkg/*.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
@@ -139,12 +182,13 @@ jobs:
               for pkg in dist/pkg/*.pkg.tar.*; do
                 if [ ! -e "$pkg" ]; then continue; fi
                 filename=$(basename "$pkg")
-                PACKAGE_NAMES="${PACKAGE_NAMES}\n- ${filename}"
+                PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
-                PACKAGE_SIZES="${PACKAGE_SIZES}\n- ${filename}: ${SIZE}"
+                PACKAGE_SIZES="$PACKAGE_SIZES"$'\n'"- $filename: $SIZE"
               done
             else
               echo "::warning::Skipping $dir_name: Neither PKGBUILD nor dist/build.sh found."
+              SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (no PKGBUILD or dist/build.sh)"
             fi
           done
           
@@ -180,7 +224,7 @@ jobs:
           
           echo "RELEASE_TAG=$NEW_TAG" >> $GITHUB_ENV
           
-          # Format Release Markdown Message
+          # Write release notes
           {
             echo "## Anos Repository Build"
             echo "**Trigger:** $TRIGGER"
@@ -188,10 +232,25 @@ jobs:
             echo "**Total Time Taken:** ${TOTAL_MIN}m ${TOTAL_SEC}s"
             echo ""
             echo "### Built Packages"
-            if [ -z "$PACKAGE_NAMES" ]; then echo "- No packages built"; else echo -e "$PACKAGE_NAMES"; fi
+            if [ -z "$PACKAGE_NAMES" ]; then
+              echo "- No packages built"
+            else
+              echo "$PACKAGE_NAMES"
+            fi
             echo ""
             echo "### Package Sizes"
-            if [ -z "$PACKAGE_SIZES" ]; then echo "- N/A"; else echo -e "$PACKAGE_SIZES"; fi
+            if [ -z "$PACKAGE_SIZES" ]; then
+              echo "- N/A"
+            else
+              echo "$PACKAGE_SIZES"
+            fi
+            echo ""
+            echo "### Skipped Packages"
+            if [ -z "$SKIPPED_PACKAGES" ]; then
+              echo "- None"
+            else
+              echo "$SKIPPED_PACKAGES"
+            fi
           } > $GITHUB_WORKSPACE/release_notes.md
 
       - name: Publish GitHub Release
