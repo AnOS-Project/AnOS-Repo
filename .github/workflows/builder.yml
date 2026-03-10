@@ -73,7 +73,7 @@ jobs:
           START_TIME=$(date +%s)
           
           # Check Trigger Type
-          if[ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TRIGGER="Manual"
           else
             TRIGGER="Auto"
@@ -90,7 +90,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/src/" || exit 0
           
           # SMART BUILD ORDER: Check if a build_order.txt exists to resolve inter-dependencies properly
-          if[ -f "build_order.txt" ]; then
+          if [ -f "build_order.txt" ]; then
             echo "Found build_order.txt! Using specified build order..."
             mapfile -t DIRS < <(grep -v '^#' build_order.txt | grep -v '^\s*$')
           else
@@ -118,7 +118,7 @@ jobs:
             
             cd "$GITHUB_WORKSPACE/src/$dir_name"
             
-            if[ -f "PKGBUILD" ]; then
+            if [ -f "PKGBUILD" ]; then
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
               # -s = sync deps only, NO -i flag so makepkg does NOT auto-install
@@ -158,7 +158,7 @@ jobs:
               INSTALL_STATUS=$?
               set -e
               
-              if[ $INSTALL_STATUS -ne 0 ]; then
+              if [ $INSTALL_STATUS -ne 0 ]; then
                 echo "::warning::Built but failed to install $dir_name (may affect dependent packages)."
               fi
               
@@ -173,7 +173,7 @@ jobs:
                 PACKAGE_SIZES="$PACKAGE_SIZES"$'\n'"- $filename: $SIZE"
               done
               
-            elif[ -f "dist/build.sh" ]; then
+            elif [ -f "dist/build.sh" ]; then
               echo "Found dist/build.sh. Running custom build script..."
               chmod +x dist/build.sh
               
@@ -235,7 +235,7 @@ jobs:
           PREV_TAG=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name || echo "none")
           while true; do
             NEW_TAG="$RANDOM$RANDOM"
-            if[ "$NEW_TAG" != "$PREV_TAG" ]; then
+            if [ "$NEW_TAG" != "$PREV_TAG" ]; then
               break
             fi
           done
@@ -250,21 +250,21 @@ jobs:
             echo "**Total Time Taken:** ${TOTAL_MIN}m ${TOTAL_SEC}s"
             echo ""
             echo "### Built Packages"
-            if[ -z "$PACKAGE_NAMES" ]; then
+            if [ -z "$PACKAGE_NAMES" ]; then
               echo "- No packages built"
             else
               echo "$PACKAGE_NAMES"
             fi
             echo ""
             echo "### Package Sizes"
-            if[ -z "$PACKAGE_SIZES" ]; then
+            if [ -z "$PACKAGE_SIZES" ]; then
               echo "- N/A"
             else
               echo "$PACKAGE_SIZES"
             fi
             echo ""
             echo "### Skipped Packages"
-            if[ -z "$SKIPPED_PACKAGES" ]; then
+            if [ -z "$SKIPPED_PACKAGES" ]; then
               echo "- None"
             else
               echo "$SKIPPED_PACKAGES"
