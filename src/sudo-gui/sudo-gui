@@ -1,0 +1,10 @@
+#!/bin/bash
+# /usr/local/bin/sudo-gui
+
+if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+  # Không có GUI session → dùng sudo thường
+  sudo "$@"
+else
+  # Có GUI session → dùng pkexec
+  pkexec "$@"
+fi

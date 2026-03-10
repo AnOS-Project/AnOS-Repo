@@ -18,3 +18,15 @@
 	path = src/lib32-nvidia-390xx-utils
 	url = https://aur.archlinux.org/lib32-nvidia-390xx-utils.git
 	branch = master
+[submodule "src/visual-studio-code-bin"]
+	path = src/visual-studio-code-bin
+	url = https://aur.archlinux.org/visual-studio-code-bin.git
+[submodule "src/android-studio"]
+	path = src/android-studio
+	url = https://aur.archlinux.org/android-studio.git
+[submodule "src/google-chrome"]
+	path = src/google-chrome
+	url = https://aur.archlinux.org/google-chrome.git
+[submodule "src/flutter-bin"]
+	path = src/flutter-bin
+	url = https://aur.archlinux.org/flutter-bin.git

@@ -1,0 +1,25 @@
+# Maintainer: AnOS Project
+pkgname=sudo-gui
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Wrapper that uses pkexec for GUI sessions and sudo for TTY"
+arch=('any')
+url="https://github.com/AnOS-Project/AnOS-Repo"
+license=('MIT')
+depends=('sudo' 'polkit')
+source=()
+sha256sums=()
+
+package() {
+  # Create the wrapper script
+  install -dm755 "$pkgdir/usr/local/bin"
+  cat >"$pkgdir/usr/local/bin/sudo-gui" <<'EOF'
+#!/bin/bash
+if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+  sudo "$@"
+else
+  pkexec "$@"
+fi
+EOF
+  chmod 755 "$pkgdir/usr/local/bin/sudo-gui"
+}
