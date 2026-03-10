@@ -6,7 +6,9 @@ android-studio
 sudo-gui
 visual-studio-code-bin
 google-chrome
-
+freetube-bin
+harmonymusic
+legcord-bin
 
 
 
