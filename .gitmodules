@@ -30,3 +30,12 @@
 [submodule "src/flutter-bin"]
 	path = src/flutter-bin
 	url = https://aur.archlinux.org/flutter-bin.git
+[submodule "src/legcord-bin"]
+	path = src/legcord-bin
+	url = https://aur.archlinux.org/legcord-bin.git
+[submodule "src/freetube-bin"]
+	path = src/freetube-bin
+	url = https://aur.archlinux.org/freetube-bin.git
+[submodule "src/harmonymusic"]
+	path = src/harmonymusic
+	url = https://aur.archlinux.org/harmonymusic.git
