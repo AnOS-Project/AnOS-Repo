@@ -224,32 +224,32 @@ jobs:
           
           echo "RELEASE_TAG=$NEW_TAG" >> $GITHUB_ENV
           
-          # Write release notes using printf to avoid echo -e portability issues
+          # Write release notes
           {
-            printf "## Anos Repository Build\n"
-            printf "**Trigger:** %s\n" "$TRIGGER"
-            printf "**Date/Time:** %s\n" "$CURRENT_DATE"
-            printf "**Total Time Taken:** %sm %ss\n" "$TOTAL_MIN" "$TOTAL_SEC"
-            printf "\n"
-            printf "### Built Packages\n"
+            echo "## Anos Repository Build"
+            echo "**Trigger:** $TRIGGER"
+            echo "**Date/Time:** $CURRENT_DATE"
+            echo "**Total Time Taken:** ${TOTAL_MIN}m ${TOTAL_SEC}s"
+            echo ""
+            echo "### Built Packages"
             if [ -z "$PACKAGE_NAMES" ]; then
-              printf "- No packages built\n"
+              echo "- No packages built"
             else
-              printf "%s\n" "$PACKAGE_NAMES"
+              echo "$PACKAGE_NAMES"
             fi
-            printf "\n"
-            printf "### Package Sizes\n"
+            echo ""
+            echo "### Package Sizes"
             if [ -z "$PACKAGE_SIZES" ]; then
-              printf "- N/A\n"
+              echo "- N/A"
             else
-              printf "%s\n" "$PACKAGE_SIZES"
+              echo "$PACKAGE_SIZES"
             fi
-            printf "\n"
-            printf "### Skipped Packages\n"
+            echo ""
+            echo "### Skipped Packages"
             if [ -z "$SKIPPED_PACKAGES" ]; then
-              printf "- None\n"
+              echo "- None"
             else
-              printf "%s\n" "$SKIPPED_PACKAGES"
+              echo "$SKIPPED_PACKAGES"
             fi
           } > $GITHUB_WORKSPACE/release_notes.md
 
