@@ -19,3 +19,10 @@ lib32-nvidia-390xx-utils
 # Nvidia 470xx Series
 nvidia-470xx-utils
 lib32-nvidia-470xx-utils
+
+# Material You Dependencies
+python-materialyoucolor
+python-pywal16
+
+# Main Package
+kde-material-you-colors
