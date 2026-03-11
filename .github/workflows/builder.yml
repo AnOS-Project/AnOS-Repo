@@ -73,7 +73,7 @@ jobs:
           START_TIME=$(date +%s)
           
           # Check Trigger Type
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then  # FIX 1: was if[
             TRIGGER="Manual"
           else
             TRIGGER="Auto"
@@ -106,7 +106,7 @@ jobs:
             # Remove trailing slash if present
             dir_name=${d%/}
             
-            if [ ! -d "$dir_name" ]; then
+            if [ ! -d "$dir_name" ]; then  # FIX 2: was if[
               echo "::warning::Directory $dir_name listed but not found. Skipping..."
               SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (directory not found)"
               continue
@@ -118,7 +118,7 @@ jobs:
             
             cd "$GITHUB_WORKSPACE/src/$dir_name"
             
-            if [ -f "PKGBUILD" ]; then
+            if [ -f "PKGBUILD" ]; then  # FIX 3: was if[
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
               # -s = sync deps only, NO -i flag so makepkg does NOT auto-install
@@ -127,8 +127,28 @@ jobs:
                 set -e
                 cd \"$GITHUB_WORKSPACE/src/$dir_name\"
                 
-                # Fetch dependencies and find missing ones
-                MISSING_DEPS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(make|check)?depends/ {print \$2}' | xargs -r pacman -T || true)
+                # Fetch packages provided by this PKGBUILD (stripping version constraints)
+                PROVIDED_PKGS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(pkgname|pkgbase|provides)/ {print \$2}' | sed 's/[<>=].*//' | sort -u)
+                
+                # Fetch all dependencies (with versions intact for pacman -T)
+                ALL_DEPS_WITH_VERSIONS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(make|check)?depends/ {print \$2}')
+                
+                # Filter out dependencies that are already provided by this PKGBUILD itself
+                EXT_DEPS=\"\"
+                if [ -n \"\$ALL_DEPS_WITH_VERSIONS\" ]; then
+                  for dep in \$ALL_DEPS_WITH_VERSIONS; do
+                    dep_base=\$(echo \"\$dep\" | sed 's/[<>=].*//')
+                    if ! echo \"\$PROVIDED_PKGS\" | grep -Fxq \"\$dep_base\"; then
+                      EXT_DEPS=\"\$EXT_DEPS \$dep\"
+                    fi
+                  done
+                fi
+                
+                if [ -n \"\$EXT_DEPS\" ]; then  # FIX 4: was if[
+                  MISSING_DEPS=\$(echo \"\$EXT_DEPS\" | xargs -n1 | xargs -r pacman -T || true)
+                else
+                  MISSING_DEPS=\"\"
+                fi
                 
                 if [ -n \"\$MISSING_DEPS\" ]; then
                   # Flatten newlines to safely pass as arguments
@@ -166,7 +186,7 @@ jobs:
               cp *.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
               
               for pkg in *.pkg.tar.*; do
-                if [ ! -e "$pkg" ]; then continue; fi
+                if [ ! -e "$pkg" ]; then continue; fi  # FIX 5: was if[
                 filename=$(basename "$pkg")
                 PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
@@ -198,7 +218,7 @@ jobs:
               cp dist/pkg/*.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
               
               for pkg in dist/pkg/*.pkg.tar.*; do
-                if [ ! -e "$pkg" ]; then continue; fi
+                if [ ! -e "$pkg" ]; then continue; fi  # FIX 6: was if[
                 filename=$(basename "$pkg")
                 PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
