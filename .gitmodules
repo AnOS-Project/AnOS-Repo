@@ -39,3 +39,6 @@
 [submodule "src/harmonymusic"]
 	path = src/harmonymusic
 	url = https://aur.archlinux.org/harmonymusic.git
+[submodule "src/tuxver"]
+	path = src/tuxver
+	url = https://github.com/AnOS-Project/tuxver

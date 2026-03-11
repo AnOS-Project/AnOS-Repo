@@ -9,7 +9,7 @@ google-chrome
 freetube-bin
 harmonymusic
 legcord-bin
-
+tuxver
 
 
 # Nvidia 390xx Series
