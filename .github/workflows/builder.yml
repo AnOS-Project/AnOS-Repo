@@ -123,7 +123,25 @@ jobs:
               
               # -s = sync deps only, NO -i flag so makepkg does NOT auto-install
               set +e
-              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && makepkg -s --noconfirm --noprogressbar"
+              su - builder -c "
+                set -e
+                cd \"$GITHUB_WORKSPACE/src/$dir_name\"
+                
+                # Fetch dependencies and find missing ones
+                MISSING_DEPS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(make|check)?depends/ {print \$2}' | xargs -r pacman -T || true)
+                
+                if [ -n \"\$MISSING_DEPS\" ]; then
+                  # Flatten newlines to safely pass as arguments
+                  MISSING_DEPS=\$(echo \$MISSING_DEPS)
+                  echo \"Missing dependencies found: \$MISSING_DEPS\"
+                  
+                  # Use yay to recursively resolve and install missing official/AUR dependencies
+                  yay -S --needed --noconfirm --asdeps \$MISSING_DEPS
+                fi
+                
+                echo \"Building package...\"
+                makepkg -s --noconfirm --noprogressbar
+              "
               BUILD_STATUS=$?
               set -e
               
@@ -136,7 +154,7 @@ jobs:
               # Install separately — pipe 'yes' to auto-answer conflict removal prompts
               # (--noconfirm alone defaults to N for "Remove conflicting package? [y/N]")
               set +e
-              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && yes | sudo pacman -U *.pkg.tar.*"
+              su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && yes | sudo pacman -U *.pkg.tar.*"
               INSTALL_STATUS=$?
               set -e
               
@@ -161,7 +179,7 @@ jobs:
               
               # RUN AS BUILDER: Execute your custom flutter script securely
               set +e
-              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && ./dist/build.sh"
+              su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && ./dist/build.sh"
               BUILD_STATUS=$?
               set -e
               
@@ -173,7 +191,7 @@ jobs:
               
               # Install with 'yes' to auto-answer conflict removal prompts
               set +e
-              su - builder -c "cd $GITHUB_WORKSPACE/src/$dir_name && yes | sudo pacman -U dist/pkg/*.pkg.tar.*"
+              su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && yes | sudo pacman -U dist/pkg/*.pkg.tar.*"
               set -e
               
               # Copy from your script's dist/pkg folder directly
@@ -201,7 +219,7 @@ jobs:
           
           # RUN AS BUILDER: Generate the DB
           if ls *.pkg.tar.* >/dev/null 2>&1; then
-            su - builder -c "cd $TMP_DIR && repo-add anos.db.tar.gz *.pkg.tar.*"
+            su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
           else
             echo "::warning::No packages were built!"
           fi
