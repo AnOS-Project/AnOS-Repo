@@ -193,6 +193,8 @@ jobs:
               cp *.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
               
               # Instantly add it to the local repo so future packages can resolve it seamlessly
+              # Rename epoch colons to dots for GitHub Release compatibility (e.g. 1:3.8.14 -> 1.3.8.14)
+              for f in "$TMP_DIR"/*.pkg.tar.*; do new="${f//:/.}"; [ "$f" != "$new" ] && mv "$f" "$new"; done
               chown -R builder:builder "$TMP_DIR"
               su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
               pacman -Sy
@@ -228,6 +230,8 @@ jobs:
               cp dist/pkg/*.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
               
               # Instantly add it to the local repo
+              # Rename epoch colons to dots for GitHub Release compatibility (e.g. 1:3.8.14 -> 1.3.8.14)
+              for f in "$TMP_DIR"/*.pkg.tar.*; do new="${f//:/.}"; [ "$f" != "$new" ] && mv "$f" "$new"; done
               chown -R builder:builder "$TMP_DIR"
               su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
               pacman -Sy
@@ -254,7 +258,9 @@ jobs:
           cd "$TMP_DIR"
           
           chown -R builder:builder "$TMP_DIR"
-          if ls *.pkg.tar.* >/dev/null 2>&1; then
+          # Rename epoch colons to dots for GitHub Release compatibility (e.g. 1:3.8.14 -> 1.3.8.14)
+          for f in "$TMP_DIR"/*.pkg.tar.*; do new="${f//:/.}"; [ "$f" != "$new" ] && mv "$f" "$new"; done
+          if ls "$TMP_DIR"/*.pkg.tar.* >/dev/null 2>&1; then
             su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
           else
             echo "::warning::No packages were built!"
