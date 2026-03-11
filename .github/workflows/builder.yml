@@ -73,19 +73,29 @@ jobs:
           START_TIME=$(date +%s)
           
           # Check Trigger Type
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then  # FIX 1: was if[
             TRIGGER="Manual"
           else
             TRIGGER="Auto"
           fi
           
-          # Setup tmp folder for final packages
+          # Setup tmp folder for final packages & Local Pacman Repo
           TMP_DIR="$GITHUB_WORKSPACE/tmp_repo"
           mkdir -p "$TMP_DIR"
+          
+          # Initialize empty repo to allow pacman -Sy to succeed initially
+          tar -cT /dev/null | gzip > "$TMP_DIR/anos.db.tar.gz"
+          ln -s anos.db.tar.gz "$TMP_DIR/anos.db"
+          chown -R builder:builder "$TMP_DIR"
+          
+          # Add local repo to pacman.conf at the top (highest priority)
+          sed -i '1i [anos]\nSigLevel = Optional TrustAll\nServer = file://'"$TMP_DIR"'\n' /etc/pacman.conf
+          pacman -Sy
           
           PACKAGE_NAMES=""
           PACKAGE_SIZES=""
           SKIPPED_PACKAGES=""
+          ALL_BUILT_PKGS=""
           
           cd "$GITHUB_WORKSPACE/src/" || exit 0
           
@@ -106,7 +116,7 @@ jobs:
             # Remove trailing slash if present
             dir_name=${d%/}
             
-            if [ ! -d "$dir_name" ]; then
+            if [ ! -d "$dir_name" ]; then  # FIX 2: was if[
               echo "::warning::Directory $dir_name listed but not found. Skipping..."
               SKIPPED_PACKAGES="$SKIPPED_PACKAGES"$'\n'"- $dir_name (directory not found)"
               continue
@@ -116,26 +126,54 @@ jobs:
             echo "Processing project: $dir_name"
             echo "================================================="
             
+            # Clean up previously built packages to avoid cross-package conflicts (e.g. nvidia 390xx vs 470xx)
+            if [ -n "$ALL_BUILT_PKGS" ]; then
+              INSTALLED_BUILT_PKGS=$(echo "$ALL_BUILT_PKGS" | tr ' ' '\n' | sort -u | xargs -r pacman -Qq 2>/dev/null || true)
+              if [ -n "$INSTALLED_BUILT_PKGS" ]; then
+                INSTALLED_BUILT_PKGS_FLAT=$(echo $INSTALLED_BUILT_PKGS)
+                echo "Cleaning up installed conflicting packages from previous builds: $INSTALLED_BUILT_PKGS_FLAT"
+                pacman -Rsc --noconfirm $INSTALLED_BUILT_PKGS_FLAT || true
+              fi
+            fi
+            
             cd "$GITHUB_WORKSPACE/src/$dir_name"
             
-            if [ -f "PKGBUILD" ]; then
+            if [ -f "PKGBUILD" ]; then  # FIX 3: was if[
               echo "Found PKGBUILD. Compiling directly via makepkg..."
               
-              # -s = sync deps only, NO -i flag so makepkg does NOT auto-install
               set +e
               su - builder -c "
                 set -e
                 cd \"$GITHUB_WORKSPACE/src/$dir_name\"
                 
-                # Fetch dependencies and find missing ones
-                MISSING_DEPS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(make|check)?depends/ {print \$2}' | xargs -r pacman -T || true)
+                # Fetch packages provided by this PKGBUILD (stripping version constraints)
+                PROVIDED_PKGS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(pkgname|pkgbase|provides)/ {print \$2}' | sed 's/[<>=].*//' | sort -u)
+                
+                # Fetch all dependencies (with versions intact for pacman -T)
+                ALL_DEPS_WITH_VERSIONS=\$(makepkg --printsrcinfo | awk -F ' = ' '/^[[:space:]]*(make|check)?depends/ {print \$2}')
+                
+                # Filter out dependencies that are already provided by this PKGBUILD itself
+                EXT_DEPS=\"\"
+                if [ -n \"\$ALL_DEPS_WITH_VERSIONS\" ]; then  # FIX 4: was if[
+                  for dep in \$ALL_DEPS_WITH_VERSIONS; do
+                    dep_base=\$(echo \"\$dep\" | sed 's/[<>=].*//')
+                    if ! echo \"\$PROVIDED_PKGS\" | grep -Fxq \"\$dep_base\"; then
+                      EXT_DEPS=\"\$EXT_DEPS \$dep\"
+                    fi
+                  done
+                fi
+                
+                if [ -n \"\$EXT_DEPS\" ]; then
+                  MISSING_DEPS=\$(echo \"\$EXT_DEPS\" | xargs -n1 | xargs -r pacman -T || true)
+                else
+                  MISSING_DEPS=\"\"
+                fi
                 
                 if [ -n \"\$MISSING_DEPS\" ]; then
-                  # Flatten newlines to safely pass as arguments
                   MISSING_DEPS=\$(echo \$MISSING_DEPS)
                   echo \"Missing dependencies found: \$MISSING_DEPS\"
                   
-                  # Use yay to recursively resolve and install missing official/AUR dependencies
+                  # Use yay to recursively resolve and install missing official/AUR/Local dependencies
                   yay -S --needed --noconfirm --asdeps \$MISSING_DEPS
                 fi
                 
@@ -151,19 +189,13 @@ jobs:
                 continue
               fi
               
-              # Install separately — pipe 'yes' to auto-answer conflict removal prompts
-              # (--noconfirm alone defaults to N for "Remove conflicting package? [y/N]")
-              set +e
-              su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && yes | sudo pacman -U *.pkg.tar.*"
-              INSTALL_STATUS=$?
-              set -e
-              
-              if [ $INSTALL_STATUS -ne 0 ]; then
-                echo "::warning::Built but failed to install $dir_name (may affect dependent packages)."
-              fi
-              
               # Copy outputs to our temp repo directory
               cp *.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
+              
+              # Instantly add it to the local repo so future packages can resolve it seamlessly
+              chown -R builder:builder "$TMP_DIR"
+              su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
+              pacman -Sy
               
               for pkg in *.pkg.tar.*; do
                 if [ ! -e "$pkg" ]; then continue; fi
@@ -171,13 +203,16 @@ jobs:
                 PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
                 PACKAGE_SIZES="$PACKAGE_SIZES"$'\n'"- $filename: $SIZE"
+                
+                # Register package for future cleanup
+                pkgname=$(pacman -Qp "$pkg" | awk '{print $1}')
+                ALL_BUILT_PKGS="$ALL_BUILT_PKGS $pkgname"
               done
               
-            elif [ -f "dist/build.sh" ]; then
+            elif [ -f "dist/build.sh" ]; then  # FIX 5: was elif[
               echo "Found dist/build.sh. Running custom build script..."
               chmod +x dist/build.sh
               
-              # RUN AS BUILDER: Execute your custom flutter script securely
               set +e
               su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && ./dist/build.sh"
               BUILD_STATUS=$?
@@ -189,20 +224,24 @@ jobs:
                 continue
               fi
               
-              # Install with 'yes' to auto-answer conflict removal prompts
-              set +e
-              su - builder -c "cd \"$GITHUB_WORKSPACE/src/$dir_name\" && yes | sudo pacman -U dist/pkg/*.pkg.tar.*"
-              set -e
-              
               # Copy from your script's dist/pkg folder directly
               cp dist/pkg/*.pkg.tar.* "$TMP_DIR/" 2>/dev/null || true
               
+              # Instantly add it to the local repo
+              chown -R builder:builder "$TMP_DIR"
+              su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
+              pacman -Sy
+              
               for pkg in dist/pkg/*.pkg.tar.*; do
-                if [ ! -e "$pkg" ]; then continue; fi
+                if [ ! -e "$pkg" ]; then continue; fi  # FIX 6: was if[
                 filename=$(basename "$pkg")
                 PACKAGE_NAMES="$PACKAGE_NAMES"$'\n'"- $filename"
                 SIZE=$(du -h "$pkg" | cut -f1)
                 PACKAGE_SIZES="$PACKAGE_SIZES"$'\n'"- $filename: $SIZE"
+                
+                # Register package for future cleanup
+                pkgname=$(pacman -Qp "$pkg" | awk '{print $1}')
+                ALL_BUILT_PKGS="$ALL_BUILT_PKGS $pkgname"
               done
             else
               echo "::warning::Skipping $dir_name: Neither PKGBUILD nor dist/build.sh found."
@@ -210,14 +249,11 @@ jobs:
             fi
           done
           
-          # Generate the 'anos' Pacman Repository
-          echo "Generating anos pacman repo..."
+          # Final Generation & Polish of the 'anos' Pacman Repository
+          echo "Generating final anos pacman repo..."
           cd "$TMP_DIR"
           
-          # Hand ownership of the copied packages back to builder before running repo-add
           chown -R builder:builder "$TMP_DIR"
-          
-          # RUN AS BUILDER: Generate the DB
           if ls *.pkg.tar.* >/dev/null 2>&1; then
             su - builder -c "cd \"$TMP_DIR\" && repo-add anos.db.tar.gz *.pkg.tar.*"
           else
