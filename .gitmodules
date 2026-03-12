@@ -51,3 +51,9 @@
 [submodule "src/python-pywal16"]
 	path = src/python-pywal16
 	url = https://aur.archlinux.org/python-pywal16.git
+[submodule "src/nvidia-580xx-utils"]
+	path = src/nvidia-580xx-utils
+	url = https://aur.archlinux.org/nvidia-580xx-utils.git
+[submodule "src/lib32-nvidia-580xx-utils"]
+	path = src/lib32-nvidia-580xx-utils
+	url = https://aur.archlinux.org/lib32-nvidia-580xx-utils.git
