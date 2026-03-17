@@ -35,7 +35,7 @@ class _AnosWelcomeAppState extends State<AnosWelcomeApp> {
       Color? parsedColor;
 
       // ATTEMPT 1: Capture the explicit Material 3 seed color from logs
-      // Ex: [I] m3_scheme_utils: get_color_schemes: Best colors: 0:#1a1c22 1:#d0deea 2:#a38779
+      // Ex:[I] m3_scheme_utils: get_color_schemes: Best colors: 0:#1a1c22 1:#d0deea 2:#a38779
       final bestColorsMatch = RegExp(r'Best colors:.*?2:(#[A-Fa-f0-9]{6})').firstMatch(output);
 
       if (bestColorsMatch != null) {
@@ -150,7 +150,31 @@ class _WelcomeWizardState extends State<WelcomeWizard> {
   Future<void> _runSystemHooks() async {
     print('[AnOS] Starting background configuration...');
 
-    // 1. Bash / Zsh fcitx5 hook
+    // 1. Wayland / Fcitx5 Native Protocol Setup
+    // Configures Plasma 6 to route input via Wayland rather than Qt/X11 modules.
+    final waylandFixScript = '''
+    # Set Fcitx5 as the Wayland virtual keyboard for the live environment
+    kwriteconfig6 --notify --file kwinrc --group Wayland --key InputMethod "org.fcitx.Fcitx5.desktop"
+    kwriteconfig6 --notify --file kwinrc --group Wayland --key VirtualKeyboardEnabled true
+    qdbus org.kde.KWin /VirtualKeyboard org.kde.kwin.VirtualKeyboard.setEnabled true || true
+
+    # Inject the setting into /etc/skel so the new user (after Calamares install) inherits it automatically
+    sudo mkdir -p /etc/skel/.config
+    sudo kwriteconfig6 --file /etc/skel/.config/kwinrc --group Wayland --key InputMethod "org.fcitx.Fcitx5.desktop"
+    sudo kwriteconfig6 --file /etc/skel/.config/kwinrc --group Wayland --key VirtualKeyboardEnabled true
+
+    # Restart Fcitx5 to apply changes
+    killall fcitx5 || true
+    fcitx5 -d &
+    ''';
+
+    Process.run('bash',['-c', waylandFixScript]).then((res) {
+      if (res.stderr.toString().isNotEmpty) {
+        print('[AnOS] Wayland fix stderr: ${res.stderr}');
+      }
+    });
+
+    // 2. Bash / Zsh fcitx5 hook
     final bashScript = '''
     sudo systemctl enable --now fcitx5-lotus-server@\$(whoami).service || \\
     (sudo systemd-sysusers && sudo systemctl enable --now fcitx5-lotus-server@\$(whoami).service)
@@ -159,7 +183,7 @@ class _WelcomeWizardState extends State<WelcomeWizard> {
       if (res.stderr.toString().isNotEmpty) print('[AnOS] Bash hook stderr: ${res.stderr}');
     });
 
-    // 2. Fish fcitx5 hook
+    // 3. Fish fcitx5 hook
     final fishScript = '''
     sudo systemctl enable --now fcitx5-lotus-server@(whoami).service; or begin
     sudo systemd-sysusers; and sudo systemctl enable --now fcitx5-lotus-server@(whoami).service
@@ -171,18 +195,19 @@ class _WelcomeWizardState extends State<WelcomeWizard> {
       print('[AnOS] Fish not found, skipping fish hook.');
     });
 
-    // 3. KDE Material You Colors Autostart
+    // 4. KDE Material You Colors Autostart
     final autostartScript = '''
-    sudo bash -c 'cat <<EOF > /etc/xdg/autostart/kde-material-you-colors.desktop[Desktop Entry]
-    Type=Application
-    Name=KDE Material You Colors
-    Exec=kde-material-you-colors
-    Icon=preferences-desktop-color
-    Terminal=false
-    Categories=Utility;
-    StartupNotify=false
-    X-GNOME-Autostart-enabled=true
-    EOF'
+    sudo bash -c 'cat <<EOF > /etc/xdg/autostart/kde-material-you-colors.desktop
+[Desktop Entry]
+Type=Application
+Name=KDE Material You Colors
+Exec=kde-material-you-colors
+Icon=preferences-desktop-color
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+EOF'
     ''';
     Process.run('bash', ['-c', autostartScript]).then((res) {
       if (res.stderr.toString().isEmpty) {
@@ -193,7 +218,7 @@ class _WelcomeWizardState extends State<WelcomeWizard> {
     });
 
     // Artificial delay to show the configuration loading screen
-    await Future.delayed(const Duration(milliseconds: 1800));
+    await Future.delayed(const Duration(milliseconds: 2000));
   }
 
   void _nextPage() async {
@@ -454,13 +479,12 @@ class _AnosLogoPainter extends CustomPainter {
 
     // 1. Draw Outer Star (Using system's Primary color)
     final outerPath = _createStarPath(
-      outerRadius: maxRadius,
-      innerRadius: maxRadius * 0.45,
-      center: center
-    );
+        outerRadius: maxRadius,
+        innerRadius: maxRadius * 0.45,
+        center: center);
     final primaryPaint = Paint()
-    ..color = primary
-    ..style = PaintingStyle.fill;
+      ..color = primary
+      ..style = PaintingStyle.fill;
 
     // Drop shadow under the primary star for depth
     canvas.drawShadow(outerPath, Colors.black.withOpacity(0.3), 8, false);
@@ -468,37 +492,36 @@ class _AnosLogoPainter extends CustomPainter {
 
     // 2. Draw Inner Background Cutout (Uses Scaffold Background to create the gap effect)
     final cutoutPath = _createStarPath(
-      outerRadius: maxRadius * 0.58,
-      innerRadius: maxRadius * 0.25,
-      center: center
-    );
+        outerRadius: maxRadius * 0.58,
+        innerRadius: maxRadius * 0.25,
+        center: center);
     final backgroundPaint = Paint()
-    ..color = background
-    ..style = PaintingStyle.fill;
+      ..color = background
+      ..style = PaintingStyle.fill;
     canvas.drawPath(cutoutPath, backgroundPaint);
 
     // 3. Draw Inner Accent Star (Using system's Tertiary accent color)
     final innerPath = _createStarPath(
-      outerRadius: maxRadius * 0.48,
-      innerRadius: maxRadius * 0.20,
-      center: center
-    );
+        outerRadius: maxRadius * 0.48,
+        innerRadius: maxRadius * 0.20,
+        center: center);
 
     // Subtle gradient blending Primary and Tertiary for a rich Material finish
     final innerGradient = LinearGradient(
-      colors: [tertiary.withOpacity(0.8), tertiary],
+      colors:[tertiary.withOpacity(0.8), tertiary],
       begin: Alignment.topCenter,
       end: Alignment.bottomCenter,
     ).createShader(Rect.fromCircle(center: center, radius: maxRadius * 0.48));
 
     final innerPaint = Paint()
-    ..shader = innerGradient
-    ..style = PaintingStyle.fill;
+      ..shader = innerGradient
+      ..style = PaintingStyle.fill;
 
     canvas.drawPath(innerPath, innerPaint);
   }
 
-  Path _createStarPath({required double outerRadius, required double innerRadius, required Offset center}) {
+  Path _createStarPath(
+      {required double outerRadius, required double innerRadius, required Offset center}) {
     final path = Path();
     const int points = 5;
     const double step = (math.pi * 2) / points;
@@ -525,7 +548,7 @@ class _AnosLogoPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _AnosLogoPainter oldDelegate) {
     return oldDelegate.primary != primary ||
-    oldDelegate.tertiary != tertiary ||
-    oldDelegate.background != background;
+        oldDelegate.tertiary != tertiary ||
+        oldDelegate.background != background;
   }
 }
