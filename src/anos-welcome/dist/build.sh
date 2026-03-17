@@ -9,7 +9,7 @@ set -e # Exit on error
 PKG_NAME="anos-welcome"
 # The actual binary name produced by Flutter (underscored)
 BINARY_NAME="anos_welcome"
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 BUILD_DIR="$(pwd)/dist/pkg"
 RELEASE_DIR="$(pwd)/build/linux/x64/release/bundle"
